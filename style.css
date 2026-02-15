@@ -1,0 +1,113 @@
+:root {
+  --bg-dark: #151520;
+  --bg-mid: #26263a;
+  --ink: #d6ddf0;
+  --accent: #50d4a8;
+  --danger: #ff5d5d;
+  --warn: #f7cf5a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: "Courier New", "Lucida Console", monospace;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 20% 10%, #24324f 0%, transparent 40%),
+    radial-gradient(circle at 80% 80%, #2f2247 0%, transparent 50%),
+    linear-gradient(135deg, #111119 0%, #0e0e14 100%);
+}
+
+body {
+  overflow: hidden;
+}
+
+.game-shell {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+}
+
+.hud-top,
+.hud-bottom {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  z-index: 4;
+  background: color-mix(in srgb, var(--bg-mid) 80%, black);
+  border: 2px solid #3f4f71;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.hud-top {
+  top: 12px;
+}
+
+.hud-bottom {
+  bottom: 12px;
+}
+
+.hud-top h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  color: var(--accent);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.canvas-wrap {
+  position: absolute;
+  inset: 0;
+  background: #0b0f16;
+  overflow: hidden;
+}
+
+#game {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  text-align: center;
+  font-size: clamp(18px, 2vw, 26px);
+  color: #ffffff;
+  text-shadow: 2px 2px 0 #000;
+}
+
+.overlay.hidden {
+  display: none;
+}
+
+#stats {
+  font-size: 14px;
+  min-height: 18px;
+}
+
+@media (max-width: 760px) {
+  .hud-top h1 {
+    font-size: 18px;
+  }
+
+  .legend {
+    font-size: 12px;
+  }
+}

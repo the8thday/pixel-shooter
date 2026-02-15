@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>像素第三人称射击 - Drone Hunt</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+
+<body>
+  <main class="game-shell">
+    <header class="hud-top">
+      <h1>Drone Hunt</h1>
+      <div class="legend">
+        <span>移动: WASD</span>
+        <span>瞄准: 鼠标</span>
+        <span>射击: 左键</span>
+        <span>翻滚: Shift</span>
+      </div>
+    </header>
+
+    <section class="canvas-wrap">
+      <canvas id="game" width="960" height="540" aria-label="2D shooter"></canvas>
+      <div class="overlay" id="overlay"></div>
+    </section>
+
+    <footer class="hud-bottom">
+      <div id="stats"></div>
+    </footer>
+  </main>
+
+  <script src="./game.js"></script>
+</body>
+
+</html>
