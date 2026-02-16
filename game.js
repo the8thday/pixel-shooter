@@ -42,12 +42,14 @@ const TOTAL_LEVELS = 10;
 const REGULARS_PER_LEVEL = 10;
 const MEDKITS_PER_LEVEL = 2;
 const MEDKIT_HEAL = 15;
+const LEVEL_TRANSITION_TIME = 1.6;
 
 let currentLevel = 0;
 let regularsLeftToSpawn = 0;
 let bossPending = false;
 let bossAlive = false;
 let spawnTimer = 0;
+let levelTransitionTimer = 0;
 
 const MINIMAP_VIEW_SCALE = 1.45;
 
@@ -109,23 +111,67 @@ function startLevel() {
   spawnMedkitsForLevel();
 }
 
-function spawnEnemy(isBoss = false) {
-  const side = Math.floor(rand(0, 4));
-  let x = 0;
-  let y = 0;
-  if (side === 0) {
-    x = rand(40, WORLD_W - 40);
-    y = rand(20, 60);
-  } else if (side === 1) {
-    x = rand(WORLD_W - 60, WORLD_W - 20);
-    y = rand(40, WORLD_H - 40);
-  } else if (side === 2) {
-    x = rand(40, WORLD_W - 40);
-    y = rand(WORLD_H - 60, WORLD_H - 20);
-  } else {
-    x = rand(20, 60);
-    y = rand(40, WORLD_H - 40);
+function beginLevelTransition() {
+  if (gameOver || levelTransitionTimer > 0 || currentLevel >= TOTAL_LEVELS) return;
+  levelTransitionTimer = LEVEL_TRANSITION_TIME;
+  bullets.length = 0;
+  enemyBullets.length = 0;
+  overlay.classList.remove("hidden");
+  overlay.innerHTML = `第 ${currentLevel} 关完成<br/>准备进入第 ${currentLevel + 1} 关`;
+}
+
+function collidesWallCircle(x, y, r) {
+  for (const w of walls) {
+    const nx = clamp(x, w.x, w.x + w.w);
+    const ny = clamp(y, w.y, w.y + w.h);
+    const dx = x - nx;
+    const dy = y - ny;
+    if (dx * dx + dy * dy < r * r) return true;
   }
+  return false;
+}
+
+function pickSpawnPoint(radius, minPlayerDistance) {
+  for (let tries = 0; tries < 160; tries++) {
+    const side = Math.floor(rand(0, 4));
+    let x = 0;
+    let y = 0;
+    if (side === 0) {
+      x = rand(40, WORLD_W - 40);
+      y = rand(20, 60);
+    } else if (side === 1) {
+      x = rand(WORLD_W - 60, WORLD_W - 20);
+      y = rand(40, WORLD_H - 40);
+    } else if (side === 2) {
+      x = rand(40, WORLD_W - 40);
+      y = rand(WORLD_H - 60, WORLD_H - 20);
+    } else {
+      x = rand(20, 60);
+      y = rand(40, WORLD_H - 40);
+    }
+
+    if (collidesWallCircle(x, y, radius)) continue;
+    if ((x - player.x) ** 2 + (y - player.y) ** 2 < minPlayerDistance ** 2) continue;
+    return { x, y };
+  }
+  for (let tries = 0; tries < 240; tries++) {
+    const x = rand(radius + 2, WORLD_W - radius - 2);
+    const y = rand(radius + 2, WORLD_H - radius - 2);
+    if (collidesWallCircle(x, y, radius)) continue;
+    return { x, y };
+  }
+  return {
+    x: clamp(player.x + rand(-420, 420), radius + 2, WORLD_W - radius - 2),
+    y: clamp(player.y + rand(-420, 420), radius + 2, WORLD_H - radius - 2)
+  };
+}
+
+function spawnEnemy(isBoss = false) {
+  const radius = isBoss ? 22 : 13;
+  const minPlayerDistance = isBoss ? 420 : 260;
+  const point = pickSpawnPoint(radius, minPlayerDistance);
+  const x = point.x;
+  const y = point.y;
   if (isBoss) {
     enemies.push({
       x,
@@ -178,7 +224,25 @@ function spawnMedkitsForLevel() {
       break;
     }
     if (!placed) {
-      medkits.push({ x: player.x + rand(-120, 120), y: player.y + rand(-120, 120), radius: 10, heal: MEDKIT_HEAL });
+      let fallback = null;
+      for (let tries = 0; tries < 80; tries++) {
+        const x = clamp(player.x + rand(-220, 220), 20, WORLD_W - 20);
+        const y = clamp(player.y + rand(-220, 220), 20, WORLD_H - 20);
+        if (hitWall(x, y)) continue;
+        fallback = { x, y };
+        break;
+      }
+      if (!fallback) {
+        for (let tries = 0; tries < 200; tries++) {
+          const x = rand(20, WORLD_W - 20);
+          const y = rand(20, WORLD_H - 20);
+          if (hitWall(x, y)) continue;
+          fallback = { x, y };
+          break;
+        }
+      }
+      if (!fallback) fallback = { x: clamp(player.x, 20, WORLD_W - 20), y: clamp(player.y, 20, WORLD_H - 20) };
+      medkits.push({ x: fallback.x, y: fallback.y, radius: 10, heal: MEDKIT_HEAL });
     }
   }
 }
@@ -482,10 +546,23 @@ function resolveWallCollision(entity) {
     const d2 = dx * dx + dy * dy;
     const r = entity.radius;
     if (d2 < r * r) {
-      const d = Math.sqrt(d2) || 0.001;
-      const overlap = r - d;
-      entity.x += (dx / d) * overlap;
-      entity.y += (dy / d) * overlap;
+      if (d2 > 0.000001) {
+        const d = Math.sqrt(d2);
+        const overlap = r - d;
+        entity.x += (dx / d) * overlap;
+        entity.y += (dy / d) * overlap;
+      } else {
+        // Center is inside the wall; push out through the nearest side.
+        const left = Math.abs(entity.x - w.x);
+        const right = Math.abs(w.x + w.w - entity.x);
+        const top = Math.abs(entity.y - w.y);
+        const bottom = Math.abs(w.y + w.h - entity.y);
+        const minEdge = Math.min(left, right, top, bottom);
+        if (minEdge === left) entity.x = w.x - r;
+        else if (minEdge === right) entity.x = w.x + w.w + r;
+        else if (minEdge === top) entity.y = w.y - r;
+        else entity.y = w.y + w.h + r;
+      }
     }
   }
 }
@@ -714,47 +791,62 @@ function gameLoop(ts) {
 
   if (!gameOver) {
     updateBgm();
-    updatePlayer(dt);
-
-    const camX = clamp(player.x - VIEW_W / 2, 0, WORLD_W - VIEW_W);
-    const camY = clamp(player.y - VIEW_H / 2, 0, WORLD_H - VIEW_H);
-    const aimX = camX + pointer.x;
-    const aimY = camY + pointer.y;
-    player.angle = Math.atan2(aimY - player.y, aimX - player.x);
-
-    if (mouseDown) playerShoot(aimX, aimY);
-
-    if (regularsLeftToSpawn > 0) {
-      spawnTimer -= dt;
-      if (spawnTimer <= 0) {
-        spawnEnemy(false);
-        regularsLeftToSpawn -= 1;
-        spawnTimer = rand(0.2, 0.8);
+    if (levelTransitionTimer > 0) {
+      levelTransitionTimer -= dt;
+      updateParticles(dt);
+      updateDeathEffects(dt);
+      if (levelTransitionTimer <= 0) {
+        levelTransitionTimer = 0;
+        overlay.classList.add("hidden");
+        startLevel();
       }
-    } else if (bossPending && !bossAlive && !enemies.length) {
-      spawnEnemy(true);
-      bossAlive = true;
-    } else if (!bossPending && !enemies.length) {
-      startLevel();
-    }
+    } else {
+      updatePlayer(dt);
 
-    updateEnemies(dt);
-    updateMedkits();
-    updateBullets(bullets, dt, false);
-    updateBullets(enemyBullets, dt, true);
-    updateParticles(dt);
-    updateDeathEffects(dt);
+      const camX = clamp(player.x - VIEW_W / 2, 0, WORLD_W - VIEW_W);
+      const camY = clamp(player.y - VIEW_H / 2, 0, WORLD_H - VIEW_H);
+      const aimX = camX + pointer.x;
+      const aimY = camY + pointer.y;
+      player.angle = Math.atan2(aimY - player.y, aimX - player.x);
 
-    if (player.hp <= 0) {
-      gameOver = true;
-      overlay.classList.remove("hidden");
-      overlay.innerHTML = "你已被击败<br/>点击刷新重开";
+      if (mouseDown) playerShoot(aimX, aimY);
+
+      if (regularsLeftToSpawn > 0) {
+        spawnTimer -= dt;
+        if (spawnTimer <= 0) {
+          spawnEnemy(false);
+          regularsLeftToSpawn -= 1;
+          spawnTimer = rand(0.2, 0.8);
+        }
+      } else if (bossPending && !bossAlive && !enemies.length) {
+        spawnEnemy(true);
+        bossAlive = true;
+      }
+
+      updateEnemies(dt);
+      updateMedkits();
+      updateBullets(bullets, dt, false);
+      updateBullets(enemyBullets, dt, true);
+      updateParticles(dt);
+      updateDeathEffects(dt);
+
+      if (regularsLeftToSpawn <= 0 && !bossPending && !enemies.length) {
+        if (currentLevel >= TOTAL_LEVELS) startLevel();
+        else beginLevelTransition();
+      }
+
+      if (player.hp <= 0) {
+        gameOver = true;
+        overlay.classList.remove("hidden");
+        overlay.innerHTML = "你已被击败<br/>点击刷新重开";
+      }
     }
   }
 
   drawWorld(dt);
   const bossState = bossAlive ? "在场" : bossPending ? "待出现" : "无";
-  stats.textContent = `关卡 ${currentLevel}/${TOTAL_LEVELS} | 待刷普通 ${regularsLeftToSpawn} | 药包 ${medkits.length} | BOSS ${bossState} | 场上敌人 ${enemies.length} | 分数 ${player.score} | 翻滚冷却 ${Math.max(0, player.dodgeCooldown).toFixed(1)}s`;
+  const gameState = levelTransitionTimer > 0 ? `过渡 ${levelTransitionTimer.toFixed(1)}s` : "战斗";
+  stats.textContent = `关卡 ${currentLevel}/${TOTAL_LEVELS} | 待刷普通 ${regularsLeftToSpawn} | 药包 ${medkits.length} | BOSS ${bossState} | 场上敌人 ${enemies.length} | 分数 ${player.score} | 状态 ${gameState} | 翻滚冷却 ${Math.max(0, player.dodgeCooldown).toFixed(1)}s`;
   requestAnimationFrame(gameLoop);
 }
 
