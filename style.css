@@ -47,6 +47,13 @@ body {
 
 .hud-top {
   top: 12px;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.hud-top.hidden-hud {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-100%);
 }
 
 .hud-bottom {
