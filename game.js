@@ -2,6 +2,7 @@ const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 const overlay = document.getElementById("overlay");
 const stats = document.getElementById("stats");
+const hudTop = document.querySelector(".hud-top");
 
 let VIEW_W = canvas.width;
 let VIEW_H = canvas.height;
@@ -13,6 +14,8 @@ const pointer = { x: VIEW_W / 2, y: VIEW_H / 2 };
 let mouseDown = false;
 let gameOver = false;
 let win = false;
+let gameInteracted = false;
+let hudHideTimeout = null;
 
 const player = {
   x: WORLD_W / 2,
@@ -286,6 +289,11 @@ let screenFlashTimer = 0;
 // Level announcement
 let levelAnnouncementTimer = 0;
 
+// Level transition state machine
+let levelTransitionState = null; // null | "celebrating" | "fadeOut" | "loading" | "fadeIn"
+let levelTransitionTimer = 0;
+let levelTransitionAlpha = 0;
+
 const MINIMAP_VIEW_SCALE = 1.45;
 
 let audioCtx = null;
@@ -427,6 +435,7 @@ function drawTileDecoration(sx, sy, type, tx, ty) {
 
 function drawLevelAnnouncement(dt) {
   if (levelAnnouncementTimer <= 0) return;
+  if (levelTransitionState) return; // don't tick during transition
   levelAnnouncementTimer -= dt;
   const mapCfg = MAP_CONFIGS[currentLevel] || MAP_CONFIGS[1];
   const alpha = levelAnnouncementTimer > 1.5
@@ -452,6 +461,7 @@ function startLevel() {
     if (!enemies.length) {
       win = true;
       gameOver = true;
+      showHud();
       overlay.classList.remove("hidden");
       overlay.innerHTML = "任务完成<br/>点击刷新重开";
     }
@@ -492,6 +502,78 @@ function startLevel() {
   superBossAlive = false;
   spawnTimer = 0.2;
   spawnMedkitsForLevel();
+}
+
+/* ===================== LEVEL TRANSITION ===================== */
+function beginLevelTransition() {
+  if (currentLevel >= TOTAL_LEVELS) {
+    startLevel(); // triggers win condition
+    return;
+  }
+  levelTransitionState = "celebrating";
+  levelTransitionTimer = 1.0;
+  levelTransitionAlpha = 0;
+}
+
+function updateLevelTransition(dt) {
+  levelTransitionTimer -= dt;
+  switch (levelTransitionState) {
+    case "celebrating":
+      if (levelTransitionTimer <= 0) {
+        levelTransitionState = "fadeOut";
+        levelTransitionTimer = 0.5;
+        levelTransitionAlpha = 0;
+      }
+      break;
+    case "fadeOut":
+      levelTransitionAlpha = clamp(1 - levelTransitionTimer / 0.5, 0, 1);
+      if (levelTransitionTimer <= 0) {
+        levelTransitionState = "loading";
+        levelTransitionTimer = 0.3;
+        levelTransitionAlpha = 1;
+        startLevel(); // switch map while screen is black
+      }
+      break;
+    case "loading":
+      levelTransitionAlpha = 1;
+      if (levelTransitionTimer <= 0) {
+        levelTransitionState = "fadeIn";
+        levelTransitionTimer = 0.5;
+      }
+      break;
+    case "fadeIn":
+      levelTransitionAlpha = clamp(levelTransitionTimer / 0.5, 0, 1);
+      if (levelTransitionTimer <= 0) {
+        levelTransitionState = null;
+        levelTransitionAlpha = 0;
+      }
+      break;
+  }
+}
+
+function drawLevelTransitionOverlay() {
+  // Black fade overlay
+  if (levelTransitionAlpha > 0) {
+    ctx.globalAlpha = levelTransitionAlpha;
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    ctx.globalAlpha = 1.0;
+  }
+  // "关卡完成!" celebration text
+  if (levelTransitionState === "celebrating") {
+    const progress = 1 - (levelTransitionTimer / 1.0);
+    const textAlpha = progress < 0.2 ? (progress / 0.2) : 1.0;
+    ctx.globalAlpha = clamp(textAlpha, 0, 1);
+    ctx.fillStyle = "#50d4a8";
+    ctx.font = "bold 36px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("关卡完成!", VIEW_W / 2, VIEW_H / 2 - 10);
+    ctx.fillStyle = "#f7cf5a";
+    ctx.font = "20px 'Courier New', monospace";
+    ctx.fillText(`分数: ${player.score}`, VIEW_W / 2, VIEW_H / 2 + 25);
+    ctx.textAlign = "left";
+    ctx.globalAlpha = 1.0;
+  }
 }
 
 function spawnEnemy(isBoss = false) {
@@ -1080,7 +1162,7 @@ function updateBullets(arr, dt, isEnemy = false) {
         }
       }
       if (hit) continue;
-    } else if ((b.x - player.x) ** 2 + (b.y - player.y) ** 2 <= (player.radius + 2) ** 2) {
+    } else if (!levelTransitionState && (b.x - player.x) ** 2 + (b.y - player.y) ** 2 <= (player.radius + 2) ** 2) {
       if (player.dodgeTimer <= 0) {
         player.hp -= b.damage || 8;
         spawnBurst(player.x, player.y, "#ff5d5d", 10);
@@ -1588,6 +1670,11 @@ function drawWorld(dt) {
   drawLevelAnnouncement(dt);
 
   drawHud(dt);
+
+  // 关卡过渡遮罩（必须在最上层）
+  if (levelTransitionState !== null) {
+    drawLevelTransitionOverlay();
+  }
 }
 
 function drawDeathEffects(camX, camY) {
@@ -1708,7 +1795,12 @@ function gameLoop(ts) {
 
   if (!gameOver) {
     updateBgm();
-    updatePlayer(dt);
+    const inTransition = !!levelTransitionState;
+
+    // Player movement: allowed during celebrating, frozen otherwise in transition
+    if (!inTransition || levelTransitionState === "celebrating") {
+      updatePlayer(dt);
+    }
 
     const camX = clamp(player.x - VIEW_W / 2, 0, WORLD_W - VIEW_W);
     const camY = clamp(player.y - VIEW_H / 2, 0, WORLD_H - VIEW_H);
@@ -1716,27 +1808,36 @@ function gameLoop(ts) {
     const aimY = camY + pointer.y;
     player.angle = Math.atan2(aimY - player.y, aimX - player.x);
 
-    if (mouseDown) playerShoot(aimX, aimY);
+    if (mouseDown && !inTransition) playerShoot(aimX, aimY);
 
-    if (regularsLeftToSpawn > 0) {
-      spawnTimer -= dt;
-      if (spawnTimer <= 0) {
-        spawnEnemy(false);
-        regularsLeftToSpawn -= 1;
-        spawnTimer = rand(0.2, 0.8);
+    if (!inTransition) {
+      if (regularsLeftToSpawn > 0) {
+        spawnTimer -= dt;
+        if (spawnTimer <= 0) {
+          spawnEnemy(false);
+          regularsLeftToSpawn -= 1;
+          spawnTimer = rand(0.2, 0.8);
+        }
+      } else if (superBossPending && !superBossAlive && !enemies.length) {
+        spawnSuperBoss(currentLevel);
+        superBossAlive = true;
+      } else if (bossPending && !bossAlive && !enemies.length) {
+        spawnEnemy(true);
+        bossAlive = true;
+      } else if (!bossPending && !superBossPending && !enemies.length) {
+        beginLevelTransition();
       }
-    } else if (superBossPending && !superBossAlive && !enemies.length) {
-      spawnSuperBoss(currentLevel);
-      superBossAlive = true;
-    } else if (bossPending && !bossAlive && !enemies.length) {
-      spawnEnemy(true);
-      bossAlive = true;
-    } else if (!bossPending && !superBossPending && !enemies.length) {
-      startLevel();
     }
 
-    updateEnemies(dt);
-    updateMedkits();
+    // Update transition state machine
+    if (levelTransitionState) {
+      updateLevelTransition(dt);
+    }
+
+    if (!inTransition) {
+      updateEnemies(dt);
+      updateMedkits();
+    }
     updateBullets(bullets, dt, false);
     updateBullets(enemyBullets, dt, true);
     updateParticles(dt);
@@ -1744,6 +1845,7 @@ function gameLoop(ts) {
 
     if (player.hp <= 0) {
       gameOver = true;
+      showHud();
       overlay.classList.remove("hidden");
       overlay.innerHTML = "你已被击败<br/>点击刷新重开";
     }
@@ -1763,9 +1865,25 @@ function onDodge() {
   player.dodgeTimer = 0.2;
 }
 
+/* ===================== HUD AUTO-HIDE ===================== */
+function hideHud() {
+  if (hudTop) hudTop.classList.add("hidden-hud");
+}
+
+function showHud() {
+  if (hudTop) hudTop.classList.remove("hidden-hud");
+}
+
+function onFirstInteraction() {
+  if (gameInteracted) return;
+  gameInteracted = true;
+  hudHideTimeout = setTimeout(hideHud, 3000);
+}
+
 /* ===================== EVENT HANDLERS ===================== */
 window.addEventListener("keydown", (e) => {
   keys.add(e.code);
+  onFirstInteraction();
   if (e.code === "ShiftLeft" || e.code === "ShiftRight") onDodge();
 
   // Weapon switching with number keys 1-5
@@ -1786,6 +1904,7 @@ canvas.addEventListener("mousemove", (e) => {
 });
 canvas.addEventListener("mousedown", () => {
   ensureBgmStarted();
+  onFirstInteraction();
   mouseDown = true;
 });
 window.addEventListener("mouseup", () => {
@@ -1805,6 +1924,19 @@ canvas.addEventListener("wheel", (e) => {
 window.addEventListener("keydown", () => {
   ensureBgmStarted();
 }, { once: true });
+
+// HUD hover-to-reveal: mouse near top shows HUD, moving away hides it
+window.addEventListener("mousemove", (e) => {
+  if (!gameInteracted || gameOver) return;
+  if (e.clientY < 50) {
+    if (hudHideTimeout) { clearTimeout(hudHideTimeout); hudHideTimeout = null; }
+    showHud();
+  } else if (e.clientY > 120) {
+    if (!hudHideTimeout && hudTop && !hudTop.classList.contains("hidden-hud")) {
+      hudHideTimeout = setTimeout(hideHud, 500);
+    }
+  }
+});
 
 window.addEventListener("click", () => {
   if (gameOver) window.location.reload();
