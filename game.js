@@ -96,7 +96,8 @@ const WEAPONS = [
     bulletColor: "#55ccff",
     recoil: 5,
     gunColor: "#3399cc",
-    gunSize: 9
+    gunSize: 9,
+    maxAmmo: 20
   },
   {
     name: "火箭筒",
@@ -261,6 +262,7 @@ const bullets = [];
 const enemyBullets = [];
 const enemies = [];
 const medkits = [];
+const speedups = [];
 const particles = [];
 const deathEffects = [];
 const walls = [];
@@ -269,6 +271,12 @@ const TOTAL_LEVELS = 10;
 const REGULARS_PER_LEVEL = 10;
 const MEDKITS_PER_LEVEL = 2;
 const MEDKIT_HEAL = 15;
+const SPEEDUPS_PER_LEVEL = 2;
+const SPEEDUP_DURATION = 5;
+const SPEEDUP_MULTIPLIER = 1.6;
+
+let sniperAmmo = 20;
+let speedBoostTimer = 0;
 
 let currentLevel = 0;
 let regularsLeftToSpawn = 0;
@@ -290,9 +298,14 @@ let screenFlashTimer = 0;
 let levelAnnouncementTimer = 0;
 
 // Level transition state machine
-let levelTransitionState = null; // null | "celebrating" | "fadeOut" | "loading" | "fadeIn"
+let levelTransitionState = null; // null | "celebrating" | "fadeOut" | "loading" | "fadeIn" | "winning"
 let levelTransitionTimer = 0;
 let levelTransitionAlpha = 0;
+
+// Win celebration
+let winFireworkTimer = 0;
+let winChoice = null; // null | "waiting"
+let newGamePlusCount = 0;
 
 const MINIMAP_VIEW_SCALE = 1.45;
 
@@ -460,10 +473,11 @@ function startLevel() {
   if (currentLevel >= TOTAL_LEVELS) {
     if (!enemies.length) {
       win = true;
-      gameOver = true;
-      showHud();
-      overlay.classList.remove("hidden");
-      overlay.innerHTML = "任务完成<br/>点击刷新重开";
+      levelTransitionState = "winning";
+      levelTransitionTimer = 4.0;
+      levelTransitionAlpha = 0;
+      winFireworkTimer = 0;
+      winChoice = null;
     }
     return;
   }
@@ -484,7 +498,7 @@ function startLevel() {
   // Level announcement
   levelAnnouncementTimer = 2.0;
 
-  regularsLeftToSpawn = REGULARS_PER_LEVEL;
+  regularsLeftToSpawn = REGULARS_PER_LEVEL + newGamePlusCount * 3;
 
   // Super boss on levels 5, 10
   if (currentLevel % 5 === 0) {
@@ -502,14 +516,13 @@ function startLevel() {
   superBossAlive = false;
   spawnTimer = 0.2;
   spawnMedkitsForLevel();
+  spawnSpeedupsForLevel();
+  sniperAmmo = 20;
+  speedBoostTimer = 0;
 }
 
 /* ===================== LEVEL TRANSITION ===================== */
 function beginLevelTransition() {
-  if (currentLevel >= TOTAL_LEVELS) {
-    startLevel(); // triggers win condition
-    return;
-  }
   levelTransitionState = "celebrating";
   levelTransitionTimer = 1.0;
   levelTransitionAlpha = 0;
@@ -548,6 +561,26 @@ function updateLevelTransition(dt) {
         levelTransitionAlpha = 0;
       }
       break;
+    case "winning":
+      // 从黑屏(1.0)渐变到半透明(0.7)
+      if (levelTransitionTimer > 0) {
+        levelTransitionAlpha = clamp(0.7 + (levelTransitionTimer / 4.0) * 0.3, 0.7, 1.0);
+      }
+      // 烟花（仅在计时期间）
+      if (winChoice !== "waiting") {
+        winFireworkTimer -= dt;
+        if (winFireworkTimer <= 0) {
+          const fx = player.x + rand(-250, 250);
+          const fy = player.y + rand(-250, 250);
+          const colors = ["#ffdd44", "#ff44ff", "#44ffff", "#50d4a8", "#ff5d5d", "#f7cf5a"];
+          spawnBurst(fx, fy, colors[Math.floor(Math.random() * colors.length)], 25);
+          winFireworkTimer = 0.25;
+        }
+      }
+      if (levelTransitionTimer <= 0 && winChoice !== "waiting") {
+        winChoice = "waiting";
+      }
+      break;
   }
 }
 
@@ -573,6 +606,59 @@ function drawLevelTransitionOverlay() {
     ctx.fillText(`分数: ${player.score}`, VIEW_W / 2, VIEW_H / 2 + 25);
     ctx.textAlign = "left";
     ctx.globalAlpha = 1.0;
+  }
+
+  // 通关庆祝画面
+  if (levelTransitionState === "winning" || winChoice === "waiting") {
+    ctx.globalAlpha = 0.7;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    ctx.globalAlpha = 1;
+
+    // 大标题
+    ctx.fillStyle = "#f7cf5a";
+    ctx.font = "bold 48px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("恭喜通关!", VIEW_W / 2, VIEW_H / 2 - 60);
+
+    // 统计信息
+    ctx.fillStyle = "#50d4a8";
+    ctx.font = "22px 'Courier New', monospace";
+    ctx.fillText(`最终分数: ${player.score}`, VIEW_W / 2, VIEW_H / 2 - 10);
+
+    if (newGamePlusCount > 0) {
+      ctx.fillStyle = "#ff5d5d";
+      ctx.font = "16px 'Courier New', monospace";
+      ctx.fillText(`第 ${newGamePlusCount + 1} 轮通关!`, VIEW_W / 2, VIEW_H / 2 + 20);
+    }
+
+    if (winChoice === "waiting") {
+      const btnW = 200, btnH = 44, gap = 30;
+      const btnY = VIEW_H / 2 + 55;
+
+      // 按钮1: 从头再来
+      const btn1X = VIEW_W / 2 - btnW - gap / 2;
+      ctx.fillStyle = "#3f4f71";
+      ctx.fillRect(btn1X, btnY, btnW, btnH);
+      ctx.strokeStyle = "#50d4a8";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(btn1X, btnY, btnW, btnH);
+      ctx.fillStyle = "#fff";
+      ctx.font = "18px 'Courier New', monospace";
+      ctx.fillText("从头再来", btn1X + btnW / 2, btnY + 28);
+
+      // 按钮2: 继续挑战
+      const btn2X = VIEW_W / 2 + gap / 2;
+      ctx.fillStyle = "#3f4f71";
+      ctx.fillRect(btn2X, btnY, btnW, btnH);
+      ctx.strokeStyle = "#f7cf5a";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(btn2X, btnY, btnW, btnH);
+      ctx.fillStyle = "#fff";
+      ctx.fillText("继续挑战", btn2X + btnW / 2, btnY + 28);
+    }
+
+    ctx.textAlign = "left";
   }
 }
 
@@ -709,6 +795,34 @@ function spawnMedkitsForLevel() {
   }
 }
 
+function spawnSpeedupsForLevel() {
+  speedups.length = 0;
+  for (let i = 0; i < SPEEDUPS_PER_LEVEL; i++) {
+    let placed = false;
+    for (let tries = 0; tries < 120; tries++) {
+      const x = rand(80, WORLD_W - 80);
+      const y = rand(80, WORLD_H - 80);
+      if (hitWall(x, y)) continue;
+      if ((x - player.x) ** 2 + (y - player.y) ** 2 < 170 ** 2) continue;
+      let overlap = false;
+      for (const m of medkits) {
+        if ((x - m.x) ** 2 + (y - m.y) ** 2 < 70 ** 2) { overlap = true; break; }
+      }
+      if (overlap) continue;
+      for (const s of speedups) {
+        if ((x - s.x) ** 2 + (y - s.y) ** 2 < 70 ** 2) { overlap = true; break; }
+      }
+      if (overlap) continue;
+      speedups.push({ x, y, radius: 10 });
+      placed = true;
+      break;
+    }
+    if (!placed) {
+      speedups.push({ x: player.x + rand(-150, 150), y: player.y + rand(-150, 150), radius: 10 });
+    }
+  }
+}
+
 function ensureBgmStarted() {
   if (bgmStarted) {
     if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
@@ -789,6 +903,10 @@ function updatePlayer(dt) {
   player.shootCooldown -= dt;
 
   let moveSpeed = player.speed;
+  if (speedBoostTimer > 0) {
+    moveSpeed *= SPEEDUP_MULTIPLIER;
+    speedBoostTimer -= dt;
+  }
   if (player.dodgeTimer > 0) {
     moveSpeed = 420;
   }
@@ -831,6 +949,10 @@ function updatePlayer(dt) {
 function playerShoot(targetX, targetY) {
   if (player.shootCooldown > 0 || gameOver) return;
   const w = getCurrentWeapon();
+  if (w.maxAmmo) {
+    if (sniperAmmo <= 0) return;
+    sniperAmmo--;
+  }
   player.shootCooldown = w.fireRate;
   player.recoilTimer = 0.08;
 
@@ -1092,6 +1214,18 @@ function updateMedkits() {
       player.hp = clamp(player.hp + m.heal, 0, player.maxHp);
       spawnBurst(m.x, m.y, "#ffffff", 14);
       medkits.splice(i, 1);
+    }
+  }
+}
+
+function updateSpeedups() {
+  for (let i = speedups.length - 1; i >= 0; i--) {
+    const s = speedups[i];
+    const r = player.radius + s.radius;
+    if ((player.x - s.x) ** 2 + (player.y - s.y) ** 2 <= r * r) {
+      speedBoostTimer = SPEEDUP_DURATION;
+      spawnBurst(s.x, s.y, "#50d4a8", 14);
+      speedups.splice(i, 1);
     }
   }
 }
@@ -1554,11 +1688,16 @@ function drawWeaponHud() {
   ctx.fillStyle = "rgba(0,0,0,0.5)";
   ctx.fillRect(18, baseY, 220, 28);
 
-  // Weapon name
+  // Weapon name + ammo
   const w = getCurrentWeapon();
   ctx.fillStyle = w.gunColor;
   ctx.font = "13px 'Courier New', monospace";
-  ctx.fillText(`[${currentWeaponIndex + 1}] ${w.name}`, 30, baseY + 18);
+  let weaponLabel = `[${currentWeaponIndex + 1}] ${w.name}`;
+  if (w.maxAmmo) {
+    weaponLabel += `  ${sniperAmmo}/${w.maxAmmo}`;
+    if (sniperAmmo <= 0) ctx.fillStyle = "#ff5d5d";
+  }
+  ctx.fillText(weaponLabel, 30, baseY + 18);
 
   // Slot indicators
   for (let i = 0; i < WEAPONS.length; i++) {
@@ -1636,6 +1775,19 @@ function drawWorld(dt) {
     ctx.fillRect(mx - 5, my - 2, 10, 4);
   }
 
+  // 加速包（绿色闪电箭头）
+  for (const s of speedups) {
+    const sx2 = Math.floor(s.x - camX);
+    const sy2 = Math.floor(s.y - camY);
+    ctx.fillStyle = "#1a1a2e";
+    ctx.fillRect(sx2 - 7, sy2 - 7, 14, 14);
+    ctx.fillStyle = "#50d4a8";
+    // 闪电形状 ⚡
+    ctx.fillRect(sx2 + 1, sy2 - 5, 3, 4);
+    ctx.fillRect(sx2 - 2, sy2 - 2, 5, 3);
+    ctx.fillRect(sx2 - 4, sy2 + 1, 3, 4);
+  }
+
   for (const e of enemies) drawEnemy(e, camX, camY);
   drawEntityPlayer(camX, camY);
   drawDeathEffects(camX, camY);
@@ -1710,6 +1862,17 @@ function drawHud() {
   ctx.fillText(`HP ${Math.max(Math.floor(player.hp), 0)}`, 30, topSafe + 12);
 
   drawWeaponHud();
+
+  // 加速状态提示
+  if (speedBoostTimer > 0) {
+    const topSafe = Math.max(86, Math.floor(VIEW_H * 0.12));
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.fillRect(18, topSafe + 78, 220, 22);
+    ctx.fillStyle = "#50d4a8";
+    ctx.font = "13px 'Courier New', monospace";
+    ctx.fillText(`⚡ 加速中! ${Math.ceil(speedBoostTimer)}s`, 30, topSafe + 93);
+  }
+
   drawMinimap();
 }
 
@@ -1770,6 +1933,13 @@ function drawMinimap() {
     const mx = Math.floor(x0 + m.x * sx);
     const my = Math.floor(y0 + m.y * sy);
     ctx.fillRect(mx - 1, my - 1, 3, 3);
+  }
+
+  ctx.fillStyle = "#50d4a8";
+  for (const s of speedups) {
+    const spx = Math.floor(x0 + s.x * sx);
+    const spy = Math.floor(y0 + s.y * sy);
+    ctx.fillRect(spx - 1, spy - 1, 3, 3);
   }
 
   // Viewport frame
@@ -1837,6 +2007,7 @@ function gameLoop(ts) {
     if (!inTransition) {
       updateEnemies(dt);
       updateMedkits();
+      updateSpeedups();
     }
     updateBullets(bullets, dt, false);
     updateBullets(enemyBullets, dt, true);
@@ -1871,13 +2042,14 @@ function hideHud() {
 }
 
 function showHud() {
+  if (hudHideTimeout) { clearTimeout(hudHideTimeout); hudHideTimeout = null; }
   if (hudTop) hudTop.classList.remove("hidden-hud");
 }
 
 function onFirstInteraction() {
   if (gameInteracted) return;
   gameInteracted = true;
-  hudHideTimeout = setTimeout(hideHud, 3000);
+  hudHideTimeout = setTimeout(() => { hideHud(); hudHideTimeout = null; }, 3000);
 }
 
 /* ===================== EVENT HANDLERS ===================== */
@@ -1933,13 +2105,43 @@ window.addEventListener("mousemove", (e) => {
     showHud();
   } else if (e.clientY > 120) {
     if (!hudHideTimeout && hudTop && !hudTop.classList.contains("hidden-hud")) {
-      hudHideTimeout = setTimeout(hideHud, 500);
+      hudHideTimeout = setTimeout(() => { hideHud(); hudHideTimeout = null; }, 500);
     }
   }
 });
 
-window.addEventListener("click", () => {
-  if (gameOver) window.location.reload();
+window.addEventListener("click", (e) => {
+  // 死亡后刷新
+  if (gameOver && !win) {
+    window.location.reload();
+    return;
+  }
+  // 通关选择按钮
+  if (winChoice === "waiting") {
+    const rect = canvas.getBoundingClientRect();
+    const clickX = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const clickY = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+    const btnW = 200, btnH = 44, gap = 30;
+    const btnY = VIEW_H / 2 + 55;
+    const btn1X = VIEW_W / 2 - btnW - gap / 2;
+    const btn2X = VIEW_W / 2 + gap / 2;
+
+    // 从头再来
+    if (clickX >= btn1X && clickX <= btn1X + btnW && clickY >= btnY && clickY <= btnY + btnH) {
+      window.location.reload();
+    }
+    // 继续挑战 (New Game+)
+    if (clickX >= btn2X && clickX <= btn2X + btnW && clickY >= btnY && clickY <= btnY + btnH) {
+      winChoice = null;
+      levelTransitionState = null;
+      levelTransitionAlpha = 0;
+      currentLevel = 0;
+      win = false;
+      newGamePlusCount++;
+      startLevel();
+    }
+  }
 });
 
 window.addEventListener("resize", resizeCanvas);
