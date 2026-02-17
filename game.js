@@ -307,6 +307,10 @@ let winFireworkTimer = 0;
 let winChoice = null; // null | "waiting"
 let newGamePlusCount = 0;
 
+// Smooth camera
+let smoothCamX = 0;
+let smoothCamY = 0;
+
 const MINIMAP_VIEW_SCALE = 1.45;
 
 let audioCtx = null;
@@ -489,6 +493,10 @@ function startLevel() {
   // Reset player to center
   player.x = WORLD_W / 2;
   player.y = WORLD_H / 2;
+
+  // Snap smooth camera to player on level start
+  smoothCamX = clamp(player.x - VIEW_W / 2, 0, WORLD_W - VIEW_W);
+  smoothCamY = clamp(player.y - VIEW_H / 2, 0, WORLD_H - VIEW_H);
 
   // Clear projectiles and effects from previous level
   bullets.length = 0;
@@ -1467,13 +1475,73 @@ function drawStretchedPixelCircle(x, y, r, color, camX, camY, stretch, angle) {
   }
 }
 
+function drawPixelShadow(x, y, radius, camX, camY, alpha) {
+  const sx = Math.floor(x - camX);
+  const sy = Math.floor(y - camY + radius * 0.5);
+  const rx = radius * 1.2;
+  const ry = radius * 0.4;
+  ctx.fillStyle = "#000000";
+  ctx.globalAlpha = alpha || 0.25;
+  for (let yy = -ry; yy <= ry; yy += 3) {
+    for (let xx = -rx; xx <= rx; xx += 3) {
+      if ((xx / rx) ** 2 + (yy / ry) ** 2 <= 1) {
+        ctx.fillRect(sx + xx, sy + yy, 3, 3);
+      }
+    }
+  }
+  ctx.globalAlpha = 1.0;
+}
+
+function drawPixelGlow(x, y, radius, color, camX, camY, intensity) {
+  const sx = Math.floor(x - camX);
+  const sy = Math.floor(y - camY);
+  const prevComp = ctx.globalCompositeOperation;
+  ctx.globalCompositeOperation = "lighter";
+  const layers = 3;
+  for (let l = layers; l >= 1; l--) {
+    const r = radius * (1 + l * 0.5);
+    const a = (intensity || 0.3) * (1 - l / (layers + 1)) * 0.4;
+    ctx.fillStyle = color;
+    ctx.globalAlpha = a;
+    for (let yy = -r; yy <= r; yy += 3) {
+      for (let xx = -r; xx <= r; xx += 3) {
+        if (xx * xx + yy * yy <= r * r) {
+          ctx.fillRect(sx + xx, sy + yy, 3, 3);
+        }
+      }
+    }
+  }
+  ctx.globalAlpha = 1.0;
+  ctx.globalCompositeOperation = prevComp;
+}
+
+function drawPixelLine(x1, y1, x2, y2, color, camX, camY, thickness) {
+  const t = thickness || 3;
+  let dx = Math.abs(x2 - x1);
+  let dy = Math.abs(y2 - y1);
+  let sx = x1 < x2 ? 3 : -3;
+  let sy = y1 < y2 ? 3 : -3;
+  let err = dx - dy;
+  ctx.fillStyle = color;
+  let cx = x1, cy = y1;
+  for (let i = 0; i < 200; i++) {
+    ctx.fillRect(Math.floor(cx - camX), Math.floor(cy - camY), t, t);
+    if (Math.abs(cx - x2) < 4 && Math.abs(cy - y2) < 4) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; cx += sx; }
+    if (e2 < dx) { err += dx; cy += sy; }
+  }
+}
+
 function drawEntityPlayer(camX, camY) {
-  // Dodge trail (afterimages)
+  // Dodge trail (afterimages) with glow
   for (const t of player.dodgeTrail) {
     const a = Math.max(0, t.alpha * 0.4);
     if (a > 0.01) {
       ctx.globalAlpha = a;
       drawPixelCircle(t.x, t.y, player.radius, "#50d4a8", camX, camY);
+      ctx.globalAlpha = a * 0.5;
+      drawPixelGlow(t.x, t.y, player.radius, "#50d4a8", camX, camY, 0.3);
       ctx.globalAlpha = 1.0;
     }
   }
@@ -1481,41 +1549,144 @@ function drawEntityPlayer(camX, camY) {
   const bOff = player.breathOffset;
   const sx = Math.floor(player.x - camX);
   const sy = Math.floor(player.y - camY + bOff);
+  const angle = player.angle;
 
-  // Body with breath offset
-  drawPixelCircle(player.x, player.y + bOff, player.radius, "#50d4a8", camX, camY);
-
-  // Walking legs
+  // === Legs with joint animation ===
+  const legColor = "#2a8868";
+  const bootColor = "#1e6650";
   if (player.isMoving) {
-    const legOffset = Math.sin(player.walkCycle * Math.PI * 2) * 4;
-    ctx.fillStyle = "#3aaa88";
-    ctx.fillRect(sx - 5, sy + player.radius - 2, 4, Math.max(2, 6 + legOffset));
-    ctx.fillRect(sx + 1, sy + player.radius - 2, 4, Math.max(2, 6 - legOffset));
+    const lc = player.walkCycle * Math.PI * 2;
+    const leg1Swing = Math.sin(lc) * 5;
+    const leg2Swing = Math.sin(lc + Math.PI) * 5;
+    // Left leg: thigh + shin
+    ctx.fillStyle = legColor;
+    ctx.fillRect(sx - 6, sy + 8, 4, Math.max(3, 5 + leg1Swing * 0.5));
+    ctx.fillStyle = bootColor;
+    ctx.fillRect(sx - 6, sy + 8 + Math.max(3, 5 + leg1Swing * 0.5), 4, 3);
+    // Right leg
+    ctx.fillStyle = legColor;
+    ctx.fillRect(sx + 2, sy + 8, 4, Math.max(3, 5 + leg2Swing * 0.5));
+    ctx.fillStyle = bootColor;
+    ctx.fillRect(sx + 2, sy + 8 + Math.max(3, 5 + leg2Swing * 0.5), 4, 3);
   } else {
-    ctx.fillStyle = "#3aaa88";
-    ctx.fillRect(sx - 5, sy + player.radius - 2, 4, 6);
-    ctx.fillRect(sx + 1, sy + player.radius - 2, 4, 6);
+    ctx.fillStyle = legColor;
+    ctx.fillRect(sx - 6, sy + 8, 4, 6);
+    ctx.fillRect(sx + 2, sy + 8, 4, 6);
+    ctx.fillStyle = bootColor;
+    ctx.fillRect(sx - 6, sy + 14, 4, 3);
+    ctx.fillRect(sx + 2, sy + 14, 4, 3);
   }
 
-  // Gun with weapon-specific rendering + recoil
+  // === Body (torso + shoulder detail) ===
+  drawPixelCircle(player.x, player.y + bOff, player.radius, "#50d4a8", camX, camY);
+  // Torso inner detail
+  ctx.fillStyle = "#40b898";
+  ctx.fillRect(sx - 4, sy - 2, 8, 8);
+  // Shoulder pads
+  ctx.fillStyle = "#3aaa88";
+  ctx.fillRect(sx - player.radius + 1, sy - 4, 5, 5);
+  ctx.fillRect(sx + player.radius - 6, sy - 4, 5, 5);
+  // Belt
+  ctx.fillStyle = "#2a7a60";
+  ctx.fillRect(sx - 6, sy + 6, 12, 3);
+
+  // === Head (small circle + goggles) facing aim direction ===
+  const headOffX = Math.cos(angle) * 2;
+  const headOffY = Math.sin(angle) * 2;
+  const headX = sx + headOffX;
+  const headY = sy - 8 + headOffY;
+  // Head base
+  ctx.fillStyle = "#60e4b8";
+  ctx.fillRect(Math.floor(headX - 4), Math.floor(headY - 4), 8, 8);
+  ctx.fillRect(Math.floor(headX - 3), Math.floor(headY - 5), 6, 10);
+  // Goggles (facing aim direction)
+  const gogX = headX + Math.cos(angle) * 3;
+  const gogY = headY + Math.sin(angle) * 3;
+  ctx.fillStyle = "#1a3a30";
+  ctx.fillRect(Math.floor(gogX - 4), Math.floor(gogY - 2), 8, 3);
+  ctx.fillStyle = "#88ffdd";
+  ctx.fillRect(Math.floor(gogX - 3), Math.floor(gogY - 1), 3, 2);
+  ctx.fillRect(Math.floor(gogX + 1), Math.floor(gogY - 1), 3, 2);
+
+  // === Weapon rendering (per weapon type) ===
   const w = getCurrentWeapon();
   const recoilPull = (player.recoilTimer > 0)
     ? -w.recoil * (player.recoilTimer / 0.08)
     : 0;
   const gunDist = 15 + recoilPull;
-  const gunX = sx + Math.cos(player.angle) * gunDist;
-  const gunY = sy + Math.sin(player.angle) * gunDist;
-  ctx.fillStyle = w.gunColor;
+  const gunX = sx + Math.cos(angle) * gunDist;
+  const gunY = sy + Math.sin(angle) * gunDist;
   const gs = w.gunSize;
-  ctx.fillRect(Math.floor(gunX - gs / 2), Math.floor(gunY - gs / 2), gs, gs);
 
-  // Muzzle flash
+  // Arm connecting body to gun
+  ctx.fillStyle = "#3aaa88";
+  const armMidX = sx + Math.cos(angle) * 8;
+  const armMidY = sy + Math.sin(angle) * 8;
+  ctx.fillRect(Math.floor(armMidX - 2), Math.floor(armMidY - 2), 4, 4);
+
+  switch (currentWeaponIndex) {
+    case 0: // Pistol - small compact
+      ctx.fillStyle = "#444444";
+      ctx.fillRect(Math.floor(gunX - 2), Math.floor(gunY - 2), 5, 4);
+      ctx.fillStyle = w.gunColor;
+      ctx.fillRect(Math.floor(gunX), Math.floor(gunY - 3), 3, 2);
+      break;
+    case 1: // Shotgun - wide barrel
+      ctx.fillStyle = w.gunColor;
+      const sgPerp = angle + Math.PI / 2;
+      ctx.fillRect(Math.floor(gunX - gs / 2), Math.floor(gunY - gs / 2), gs, gs);
+      ctx.fillStyle = "#665522";
+      ctx.fillRect(Math.floor(gunX - 3 + Math.cos(angle) * -3), Math.floor(gunY - 1 + Math.sin(angle) * -3), 6, 3);
+      // Double barrel
+      ctx.fillStyle = "#333333";
+      ctx.fillRect(Math.floor(gunX + Math.cos(sgPerp) * 2 - 1), Math.floor(gunY + Math.sin(sgPerp) * 2 - 1), 2, 2);
+      ctx.fillRect(Math.floor(gunX - Math.cos(sgPerp) * 2 - 1), Math.floor(gunY - Math.sin(sgPerp) * 2 - 1), 2, 2);
+      break;
+    case 2: // SMG - compact with magazine
+      ctx.fillStyle = w.gunColor;
+      ctx.fillRect(Math.floor(gunX - gs / 2), Math.floor(gunY - gs / 2), gs, gs);
+      ctx.fillStyle = "#556655";
+      ctx.fillRect(Math.floor(gunX + Math.sin(angle) * 3 - 1), Math.floor(gunY - Math.cos(angle) * 3 - 1), 3, 4);
+      break;
+    case 3: // Sniper - long barrel
+      ctx.fillStyle = w.gunColor;
+      ctx.fillRect(Math.floor(gunX - gs / 2), Math.floor(gunY - gs / 2), gs, Math.floor(gs * 0.6));
+      // Scope
+      ctx.fillStyle = "#224466";
+      ctx.fillRect(Math.floor(gunX - 1), Math.floor(gunY - gs / 2 - 2), 3, 3);
+      // Long barrel
+      ctx.fillStyle = "#2a7aaa";
+      const barrelEndX = gunX + Math.cos(angle) * 6;
+      const barrelEndY = gunY + Math.sin(angle) * 6;
+      ctx.fillRect(Math.floor(barrelEndX - 1), Math.floor(barrelEndY - 1), 3, 3);
+      break;
+    case 4: // Rocket launcher - big tube
+      ctx.fillStyle = w.gunColor;
+      ctx.fillRect(Math.floor(gunX - gs / 2), Math.floor(gunY - gs / 2), gs, gs);
+      ctx.fillStyle = "#aa2222";
+      ctx.fillRect(Math.floor(gunX - gs / 2 - 2), Math.floor(gunY - gs / 2 - 1), gs + 4, gs + 2);
+      ctx.fillStyle = "#882222";
+      ctx.fillRect(Math.floor(gunX + Math.cos(angle) * -4 - 2), Math.floor(gunY + Math.sin(angle) * -4 - 2), 5, 5);
+      break;
+    default:
+      ctx.fillStyle = w.gunColor;
+      ctx.fillRect(Math.floor(gunX - gs / 2), Math.floor(gunY - gs / 2), gs, gs);
+  }
+
+  // === Muzzle flash with glow ===
   if (player.recoilTimer > 0.05) {
     const flashDist = gunDist + gs / 2 + 3;
-    const fx = sx + Math.cos(player.angle) * flashDist;
-    const fy = sy + Math.sin(player.angle) * flashDist;
+    const fx = sx + Math.cos(angle) * flashDist;
+    const fy = sy + Math.sin(angle) * flashDist;
+    // Flash core
     ctx.fillStyle = "#ffffff";
+    ctx.fillRect(Math.floor(fx - 3), Math.floor(fy - 3), 6, 6);
+    ctx.fillStyle = w.bulletColor;
     ctx.fillRect(Math.floor(fx - 2), Math.floor(fy - 2), 4, 4);
+    // Glow effect
+    drawPixelGlow(player.x + Math.cos(angle) * (flashDist + 3),
+      player.y + bOff + Math.sin(angle) * (flashDist + 3),
+      6, w.bulletColor, camX, camY, 0.6);
   }
 }
 
@@ -1527,46 +1698,378 @@ function drawEnemy(e, camX, camY) {
 
   const sx = Math.floor(e.x - camX);
   const sy = Math.floor(e.y - camY);
-
-  // Patrol wobble
   const wobble = Math.sin(e.animTime * 4 + e.wobblePhase) * 2;
-
-  // Attack flash: draw white before shooting
   const bodyColor = e.attackFlashTimer > 0
     ? "#ffffff"
     : (e.bodyColor || (e.isBoss ? "#ff8c3a" : "#ff5d5d"));
 
-  // Chase stretch
-  if (e.chaseStretch > 0.1) {
-    const toPlayerAngle = Math.atan2(player.y - e.y, player.x - e.x);
-    drawStretchedPixelCircle(e.x, e.y, e.radius, bodyColor,
-      camX, camY, e.chaseStretch * 0.2, toPlayerAngle);
-  } else {
-    drawPixelCircle(e.x + wobble, e.y, e.radius, bodyColor, camX, camY);
+  // Hit glow
+  if (e.attackFlashTimer > 0) {
+    drawPixelGlow(e.x, e.y, e.radius + 4, "#ffffff", camX, camY, 0.5);
   }
 
-  // Face
-  ctx.fillStyle = e.eyeColor || "#1b1111";
   if (e.isBoss) {
+    // Boss uses base circle + animated face (enhanced in Step 7)
+    if (e.chaseStretch > 0.1) {
+      const toPlayerAngle = Math.atan2(player.y - e.y, player.x - e.x);
+      drawStretchedPixelCircle(e.x, e.y, e.radius, bodyColor,
+        camX, camY, e.chaseStretch * 0.2, toPlayerAngle);
+    } else {
+      drawPixelCircle(e.x + wobble, e.y, e.radius, bodyColor, camX, camY);
+    }
     drawBossAnimatedFace(e, sx + wobble, sy);
-  } else {
-    ctx.fillRect(sx + wobble - 4, sy - 2, 3, 3);
-    ctx.fillRect(sx + wobble + 1, sy - 2, 3, 3);
+    return;
+  }
+
+  // Themed enemy drawing per level
+  const level = currentLevel;
+  const t = e.animTime;
+  const r = e.radius;
+  const wx = sx + wobble;
+
+  // Chase stretch base for all types
+  if (e.chaseStretch > 0.1) {
+    const toPlayerAngle = Math.atan2(player.y - e.y, player.x - e.x);
+    drawStretchedPixelCircle(e.x, e.y, r, bodyColor, camX, camY, e.chaseStretch * 0.2, toPlayerAngle);
+  }
+
+  switch (level) {
+    case 1: { // Volcano - fire creature with flame tendrils
+      if (e.chaseStretch <= 0.1) {
+        // Irregular body
+        drawPixelCircle(e.x + wobble, e.y, r, bodyColor, camX, camY);
+        ctx.fillStyle = "#ff6622";
+        ctx.fillRect(wx - 5, sy - r + 2, 4, 3);
+        ctx.fillRect(wx + 2, sy - r + 1, 3, 4);
+      }
+      // Flame tendrils (animated)
+      ctx.fillStyle = "#ff8844";
+      for (let i = 0; i < 4; i++) {
+        const ta = (Math.PI * 2 / 4) * i + t * 3;
+        const fx = wx + Math.cos(ta) * (r + 2);
+        const fy = sy + Math.sin(ta) * (r + 2);
+        const fh = 3 + Math.sin(t * 6 + i * 2) * 3;
+        ctx.fillRect(Math.floor(fx - 1), Math.floor(fy - fh), 3, Math.floor(fh));
+      }
+      // Orange glow core
+      ctx.fillStyle = "#ffaa22";
+      ctx.fillRect(wx - 2, sy - 2, 4, 4);
+      // Eyes
+      ctx.fillStyle = e.eyeColor;
+      ctx.fillRect(wx - 4, sy - 3, 3, 3);
+      ctx.fillRect(wx + 1, sy - 3, 3, 3);
+      break;
+    }
+    case 2: { // Grassland - boar/beetle with short legs and horns
+      if (e.chaseStretch <= 0.1) {
+        // Elliptical body
+        ctx.fillStyle = bodyColor;
+        for (let yy = -r; yy <= r * 0.7; yy += 3) {
+          for (let xx = -r * 1.3; xx <= r * 1.3; xx += 3) {
+            if ((xx / (r * 1.3)) ** 2 + (yy / (r * 0.7)) ** 2 <= 1) {
+              ctx.fillRect(wx + xx, sy + yy, 3, 3);
+            }
+          }
+        }
+      }
+      // Short legs
+      const legSwing = Math.sin(t * 8) * 2;
+      ctx.fillStyle = "#6a4020";
+      ctx.fillRect(wx - 8, sy + r * 0.5, 3, 4 + legSwing);
+      ctx.fillRect(wx + 5, sy + r * 0.5, 3, 4 - legSwing);
+      ctx.fillRect(wx - 4, sy + r * 0.5, 3, 4 - legSwing);
+      ctx.fillRect(wx + 1, sy + r * 0.5, 3, 4 + legSwing);
+      // Horns
+      ctx.fillStyle = "#ccaa80";
+      ctx.fillRect(wx - 6, sy - r + 1, 3, 5);
+      ctx.fillRect(wx + 4, sy - r + 1, 3, 5);
+      ctx.fillRect(wx - 7, sy - r, 3, 3);
+      ctx.fillRect(wx + 5, sy - r, 3, 3);
+      // Eyes
+      ctx.fillStyle = e.eyeColor;
+      ctx.fillRect(wx - 4, sy - 3, 3, 3);
+      ctx.fillRect(wx + 2, sy - 3, 3, 3);
+      break;
+    }
+    case 3: { // Secret forest - mushroom person
+      if (e.chaseStretch <= 0.1) {
+        // Stem (narrow)
+        ctx.fillStyle = "#88bb88";
+        ctx.fillRect(wx - 3, sy, 6, r);
+        ctx.fillRect(wx - 4, sy + r - 3, 8, 3);
+        // Cap (wide dome)
+        ctx.fillStyle = bodyColor;
+        for (let yy = -r; yy <= 0; yy += 3) {
+          for (let xx = -r - 3; xx <= r + 3; xx += 3) {
+            if ((xx / (r + 3)) ** 2 + (yy / r) ** 2 <= 1) {
+              ctx.fillRect(wx + xx, sy + yy, 3, 3);
+            }
+          }
+        }
+        // Spots on cap
+        ctx.fillStyle = "#88ffcc";
+        ctx.fillRect(wx - 5, sy - r + 4, 3, 3);
+        ctx.fillRect(wx + 3, sy - r + 5, 3, 3);
+        ctx.fillRect(wx, sy - r + 2, 3, 3);
+      }
+      // Face on stem
+      ctx.fillStyle = e.eyeColor;
+      ctx.fillRect(wx - 3, sy + 2, 2, 2);
+      ctx.fillRect(wx + 1, sy + 2, 2, 2);
+      break;
+    }
+    case 4: { // Ocean - jellyfish (translucent dome + tentacles)
+      if (e.chaseStretch <= 0.1) {
+        // Translucent dome
+        ctx.globalAlpha = 0.6;
+        drawPixelCircle(e.x + wobble, e.y - 2, r, bodyColor, camX, camY);
+        ctx.globalAlpha = 0.3;
+        drawPixelCircle(e.x + wobble, e.y - 2, r - 3, "#88ddff", camX, camY);
+        ctx.globalAlpha = 1.0;
+      }
+      // Tentacles (swaying)
+      ctx.fillStyle = bodyColor;
+      ctx.globalAlpha = 0.7;
+      for (let i = 0; i < 5; i++) {
+        const tx = wx - 8 + i * 4;
+        const tentSway = Math.sin(t * 3 + i * 1.2) * 3;
+        for (let j = 0; j < 4; j++) {
+          ctx.fillRect(tx + Math.floor(Math.sin(t * 2 + j + i) * 2) + Math.floor(tentSway), sy + r - 4 + j * 3, 2, 3);
+        }
+      }
+      ctx.globalAlpha = 1.0;
+      // Eyes (glowing)
+      ctx.fillStyle = e.eyeColor;
+      ctx.fillRect(wx - 4, sy - 4, 3, 3);
+      ctx.fillRect(wx + 1, sy - 4, 3, 3);
+      break;
+    }
+    case 5: { // Desert - scorpion (flat body + claws + tail)
+      if (e.chaseStretch <= 0.1) {
+        // Flat body
+        ctx.fillStyle = bodyColor;
+        for (let yy = -r * 0.5; yy <= r * 0.5; yy += 3) {
+          for (let xx = -r * 1.2; xx <= r * 1.2; xx += 3) {
+            if ((xx / (r * 1.2)) ** 2 + (yy / (r * 0.5)) ** 2 <= 1) {
+              ctx.fillRect(wx + xx, sy + yy, 3, 3);
+            }
+          }
+        }
+      }
+      // Claws
+      ctx.fillStyle = "#ddaa55";
+      ctx.fillRect(wx - r - 4, sy - 4, 5, 4);
+      ctx.fillRect(wx - r - 6, sy - 6, 3, 4);
+      ctx.fillRect(wx + r, sy - 4, 5, 4);
+      ctx.fillRect(wx + r + 4, sy - 6, 3, 4);
+      // Tail (curved up)
+      ctx.fillStyle = bodyColor;
+      const tailSway = Math.sin(t * 2) * 2;
+      ctx.fillRect(wx + tailSway, sy - r * 0.5 - 3, 3, 3);
+      ctx.fillRect(wx + tailSway + 1, sy - r * 0.5 - 7, 3, 4);
+      ctx.fillStyle = "#ff4422";
+      ctx.fillRect(wx + tailSway + 1, sy - r * 0.5 - 10, 3, 3);
+      // Eyes
+      ctx.fillStyle = e.eyeColor;
+      ctx.fillRect(wx - 5, sy - 2, 2, 2);
+      ctx.fillRect(wx + 3, sy - 2, 2, 2);
+      break;
+    }
+    case 6: { // Ruined city - robot (boxy + antenna + LED eyes)
+      if (e.chaseStretch <= 0.1) {
+        // Square body
+        ctx.fillStyle = bodyColor;
+        ctx.fillRect(wx - r, sy - r, r * 2, r * 2);
+        // Inner panel
+        ctx.fillStyle = "#5566778";
+        ctx.fillRect(wx - r + 3, sy - r + 3, r * 2 - 6, r * 2 - 6);
+      }
+      // Antenna
+      ctx.fillStyle = "#aabbcc";
+      ctx.fillRect(wx - 1, sy - r - 6, 3, 6);
+      // Antenna blink
+      ctx.fillStyle = Math.sin(t * 8) > 0 ? "#ff4444" : "#440000";
+      ctx.fillRect(wx - 1, sy - r - 8, 3, 3);
+      // LED eyes
+      ctx.fillStyle = Math.sin(t * 6) > 0 ? e.eyeColor : "#660000";
+      ctx.fillRect(wx - 5, sy - 4, 4, 3);
+      ctx.fillRect(wx + 2, sy - 4, 4, 3);
+      // Mouth grill
+      ctx.fillStyle = "#334455";
+      for (let i = 0; i < 3; i++) {
+        ctx.fillRect(wx - 4 + i * 3, sy + 2, 2, 3);
+      }
+      // Legs
+      ctx.fillStyle = "#556677";
+      ctx.fillRect(wx - 5, sy + r, 3, 4);
+      ctx.fillRect(wx + 3, sy + r, 3, 4);
+      break;
+    }
+    case 7: { // Space - alien bug (asymmetric + glowing spots)
+      if (e.chaseStretch <= 0.1) {
+        drawPixelCircle(e.x + wobble, e.y, r, bodyColor, camX, camY);
+        // Asymmetric bump
+        ctx.fillStyle = bodyColor;
+        ctx.fillRect(wx + r - 2, sy - 3, 5, 6);
+      }
+      // Glowing spots
+      const spotPhase = t * 4;
+      ctx.fillStyle = "#44ff88";
+      ctx.globalAlpha = 0.5 + Math.sin(spotPhase) * 0.3;
+      ctx.fillRect(wx - 5, sy - 5, 3, 3);
+      ctx.globalAlpha = 0.5 + Math.sin(spotPhase + 2) * 0.3;
+      ctx.fillRect(wx + 3, sy + 1, 3, 3);
+      ctx.globalAlpha = 0.5 + Math.sin(spotPhase + 4) * 0.3;
+      ctx.fillRect(wx - 2, sy + 4, 3, 3);
+      ctx.globalAlpha = 1.0;
+      // Eyes (mismatched sizes)
+      ctx.fillStyle = e.eyeColor;
+      ctx.fillRect(wx - 5, sy - 3, 4, 3);
+      ctx.fillRect(wx + 2, sy - 2, 3, 2);
+      // Antennae
+      ctx.fillStyle = "#aa66ee";
+      ctx.fillRect(wx - 3, sy - r - 4, 2, 5);
+      ctx.fillRect(wx + 2, sy - r - 3, 2, 4);
+      break;
+    }
+    case 8: { // Battlefield - zombie soldier (humanoid + broken armor)
+      if (e.chaseStretch <= 0.1) {
+        drawPixelCircle(e.x + wobble, e.y, r, bodyColor, camX, camY);
+      }
+      // Helmet (damaged)
+      ctx.fillStyle = "#4a4a30";
+      ctx.fillRect(wx - 7, sy - r - 2, 14, 5);
+      ctx.fillRect(wx - 6, sy - r - 4, 4, 3);
+      // Armor plate (cracked)
+      ctx.fillStyle = "#5a5540";
+      ctx.fillRect(wx - 5, sy - 2, 10, 8);
+      ctx.fillStyle = "#3a3520";
+      ctx.fillRect(wx - 1, sy, 2, 6); // Crack
+      // Eyes (red glow)
+      ctx.fillStyle = e.eyeColor;
+      ctx.fillRect(wx - 4, sy - r + 4, 3, 2);
+      ctx.fillRect(wx + 1, sy - r + 4, 3, 2);
+      // Arms
+      const armSwing = Math.sin(t * 3) * 2;
+      ctx.fillStyle = bodyColor;
+      ctx.fillRect(wx - r - 2, sy - 2 + armSwing, 3, 6);
+      ctx.fillRect(wx + r, sy - 2 - armSwing, 3, 6);
+      break;
+    }
+    case 9: { // Bone forest - skeleton (bone structure + empty eye sockets)
+      if (e.chaseStretch <= 0.1) {
+        // Skull
+        ctx.fillStyle = bodyColor;
+        ctx.fillRect(wx - 6, sy - r, 12, 10);
+        ctx.fillRect(wx - 5, sy - r - 2, 10, 3);
+      }
+      // Empty eye sockets
+      ctx.fillStyle = "#1a0a1a";
+      ctx.fillRect(wx - 5, sy - r + 3, 4, 4);
+      ctx.fillRect(wx + 1, sy - r + 3, 4, 4);
+      // Nose
+      ctx.fillRect(wx - 1, sy - r + 7, 2, 2);
+      // Jaw
+      ctx.fillStyle = bodyColor;
+      ctx.fillRect(wx - 5, sy - r + 10, 10, 3);
+      ctx.fillStyle = "#1a0a1a";
+      for (let i = 0; i < 4; i++) {
+        ctx.fillRect(wx - 4 + i * 3, sy - r + 10, 1, 3);
+      }
+      // Spine + ribs
+      ctx.fillStyle = bodyColor;
+      ctx.fillRect(wx - 1, sy, 2, r);
+      ctx.fillRect(wx - 5, sy + 2, 10, 2);
+      ctx.fillRect(wx - 4, sy + 6, 8, 2);
+      // Limbs
+      ctx.fillRect(wx - r, sy + 1, 5, 2);
+      ctx.fillRect(wx + r - 5, sy + 1, 5, 2);
+      break;
+    }
+    case 10: { // Factory - laser drone (diamond body + rotating blades)
+      if (e.chaseStretch <= 0.1) {
+        // Diamond body
+        ctx.fillStyle = bodyColor;
+        const dr = r * 0.8;
+        for (let yy = -dr; yy <= dr; yy += 3) {
+          const halfW = dr - Math.abs(yy);
+          for (let xx = -halfW; xx <= halfW; xx += 3) {
+            ctx.fillRect(wx + xx, sy + yy, 3, 3);
+          }
+        }
+      }
+      // Rotating blades
+      ctx.fillStyle = "#aabb55";
+      for (let i = 0; i < 4; i++) {
+        const ba = (Math.PI * 2 / 4) * i + t * 6;
+        const bx = wx + Math.cos(ba) * (r + 4);
+        const by = sy + Math.sin(ba) * (r + 4);
+        ctx.fillRect(Math.floor(bx - 2), Math.floor(by - 1), 5, 3);
+      }
+      // Central eye
+      ctx.fillStyle = e.eyeColor;
+      const eyePulse = Math.sin(t * 5) > 0 ? 4 : 3;
+      ctx.fillRect(wx - Math.floor(eyePulse / 2), sy - Math.floor(eyePulse / 2), eyePulse, eyePulse);
+      // Scan line
+      ctx.fillStyle = "#ff8800";
+      ctx.globalAlpha = 0.4;
+      ctx.fillRect(wx - 1, sy + r * 0.5, 2, 8 + Math.sin(t * 4) * 4);
+      ctx.globalAlpha = 1.0;
+      break;
+    }
+    default: {
+      // Fallback: original circle + eyes
+      if (e.chaseStretch <= 0.1) {
+        drawPixelCircle(e.x + wobble, e.y, r, bodyColor, camX, camY);
+      }
+      ctx.fillStyle = e.eyeColor || "#1b1111";
+      ctx.fillRect(wx - 4, sy - 2, 3, 3);
+      ctx.fillRect(wx + 1, sy - 2, 3, 3);
+    }
   }
 }
 
 function drawBossAnimatedFace(e, sx, sy) {
+  // Horns/spikes decoration
+  ctx.fillStyle = e.bodyColor || "#ff8c3a";
+  const spikeH = 4 + Math.sin(e.animTime * 4) * 2;
+  ctx.fillRect(sx - e.radius + 2, sy - e.radius - Math.floor(spikeH), 4, Math.floor(spikeH) + 2);
+  ctx.fillRect(sx + e.radius - 6, sy - e.radius - Math.floor(spikeH), 4, Math.floor(spikeH) + 2);
+  ctx.fillRect(sx - 2, sy - e.radius - Math.floor(spikeH) - 2, 4, Math.floor(spikeH));
+
+  // Attack charge: body swell
+  if (e.attackFlashTimer > 0) {
+    const swell = e.attackFlashTimer / 0.15;
+    ctx.fillStyle = "#ffffff";
+    ctx.globalAlpha = swell * 0.3;
+    drawPixelCircle(e.x, e.y, e.radius + 3, "#ffffff", Math.floor(e.x - sx), Math.floor(e.y - sy));
+    ctx.globalAlpha = 1.0;
+  }
+
+  // Glow pulse
+  const glowPulse = Math.sin(e.animTime * 3) * 0.2 + 0.3;
+  drawPixelGlow(e.x, e.y, e.radius, e.eyeColor || "#ffaa00",
+    Math.floor(e.x - sx), Math.floor(e.y - sy), glowPulse);
+
   // Pulsing eyes
   const eyePulse = Math.sin(e.animTime * 6) * 0.5 + 0.5;
   const eyeSize = Math.floor(4 + eyePulse);
   ctx.fillStyle = e.attackFlashTimer > 0 ? "#ff0000" : (e.eyeColor || "#1b1111");
   ctx.fillRect(sx - 7, sy - 3, eyeSize, eyeSize);
   ctx.fillRect(sx + 3, sy - 3, eyeSize, eyeSize);
+  // Eye glow
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(sx - 6, sy - 2, 2, 2);
+  ctx.fillRect(sx + 4, sy - 2, 2, 2);
 
-  // Animated mouth
+  // Animated mouth with teeth
   const mouthOpen = Math.abs(Math.sin(e.animTime * 3)) * 3;
+  ctx.fillStyle = "#1a0000";
+  ctx.fillRect(sx - 4, sy + 2, 8, Math.floor(4 + mouthOpen));
   ctx.fillStyle = e.eyeColor || "#ffe58a";
-  ctx.fillRect(sx - 2, sy + 2, 4, Math.floor(3 + mouthOpen));
+  for (let i = 0; i < 3; i++) {
+    ctx.fillRect(sx - 3 + i * 3, sy + 2, 2, 2);
+  }
 }
 
 /* ===================== SUPER BOSS DRAWING ===================== */
@@ -1582,6 +2085,9 @@ function drawSuperBoss(e, camX, camY) {
   if (e.phaseTransitionTimer > 0) {
     bodyColor = Math.floor(e.phaseTransitionTimer * 10) % 2
       ? "#ffffff" : config.bodyColor;
+    // Transition shockwave
+    const tProg = 1 - e.phaseTransitionTimer;
+    drawPixelGlow(e.x, e.y, e.radius + tProg * 40, "#ff4444", camX, camY, 0.6 * e.phaseTransitionTimer);
   }
 
   // Entrance animation
@@ -1589,15 +2095,21 @@ function drawSuperBoss(e, camX, camY) {
     const t = 1 - (e.entranceTimer / 1.5);
     const drawR = Math.max(3, e.radius * t);
     drawPixelCircle(e.x, e.y, drawR, bodyColor, camX, camY);
+    drawPixelGlow(e.x, e.y, drawR + 10, bodyColor, camX, camY, 0.5 * t);
     return;
   }
 
-  // Phase 2 glow
+  // Phase 2 glow (enhanced)
   if (e.phase === 2) {
     const pulse = Math.sin(e.animTime * 8) * 0.3 + 0.7;
-    ctx.globalAlpha = pulse * 0.3;
-    drawPixelCircle(e.x, e.y, e.radius + 5, "#ff4444", camX, camY);
-    ctx.globalAlpha = 1.0;
+    // Outer aura
+    drawPixelGlow(e.x, e.y, e.radius + 12, "#ff2222", camX, camY, pulse * 0.4);
+    // Shield ring
+    ctx.strokeStyle = `rgba(255, 100, 100, ${pulse * 0.5})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(sx, sy, e.radius + 8 + Math.sin(e.animTime * 3) * 2, 0, Math.PI * 2);
+    ctx.stroke();
   }
 
   // Main body
@@ -1615,43 +2127,126 @@ function drawSuperBoss(e, camX, camY) {
 }
 
 function drawGuardianFace(e, sx, sy, config) {
+  // Armor plates (multi-part body)
+  ctx.fillStyle = "#9944cc";
+  ctx.fillRect(sx - e.radius + 4, sy - 6, 8, 12);
+  ctx.fillRect(sx + e.radius - 12, sy - 6, 8, 12);
+  // Armor highlight
+  ctx.fillStyle = "#bb66ee";
+  ctx.fillRect(sx - e.radius + 5, sy - 5, 6, 2);
+  ctx.fillRect(sx + e.radius - 11, sy - 5, 6, 2);
+
+  // Core glow
+  const corePulse = Math.sin(e.animTime * 4) * 0.3 + 0.7;
+  ctx.fillStyle = config.eyeColor;
+  ctx.globalAlpha = corePulse;
+  ctx.fillRect(sx - 4, sy - 4, 8, 8);
+  ctx.globalAlpha = 1.0;
+
+  // Three eyes (triangle formation)
   const eyePulse = Math.sin(e.animTime * 5);
   const eyeSize = Math.floor(5 + eyePulse);
   ctx.fillStyle = config.eyeColor;
   ctx.fillRect(sx - 10, sy - 8, eyeSize, eyeSize);
   ctx.fillRect(sx + 5, sy - 8, eyeSize, eyeSize);
   ctx.fillRect(sx - 2, sy + 4, eyeSize, eyeSize);
+  // Eye pupils
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(sx - 8, sy - 6, 2, 2);
+  ctx.fillRect(sx + 7, sy - 6, 2, 2);
+  ctx.fillRect(sx, sy + 6, 2, 2);
 
-  // Crown decoration
+  // Crown decoration (enhanced)
   ctx.fillStyle = "#ffdd44";
   for (let i = -2; i <= 2; i++) {
-    const h = (i % 2 === 0) ? 8 : 5;
+    const h = (i % 2 === 0) ? 10 : 6;
     ctx.fillRect(sx + i * 6 - 2, sy - e.radius - h, 4, h);
+  }
+  // Crown gems
+  ctx.fillStyle = "#ff44aa";
+  ctx.fillRect(sx - 2, sy - e.radius - 8, 4, 4);
+  ctx.fillStyle = "#44aaff";
+  ctx.fillRect(sx - 14, sy - e.radius - 6, 3, 3);
+  ctx.fillRect(sx + 12, sy - e.radius - 6, 3, 3);
+
+  // Phase 2: color shift + shield halo
+  if (e.phase === 2) {
+    ctx.fillStyle = "#ff66cc";
+    ctx.globalAlpha = 0.3;
+    drawPixelCircle(e.x, e.y, e.radius - 3, "#ff66cc",
+      Math.floor(e.x - sx), Math.floor(e.y - sy));
+    ctx.globalAlpha = 1.0;
   }
 }
 
 function drawDestroyerFace(e, sx, sy, config) {
+  // Angry V-shaped eyes
   const eyePulse = Math.sin(e.animTime * 7) * 1.5;
   ctx.fillStyle = config.eyeColor;
   ctx.fillRect(sx - 14, sy - 6, 7, Math.floor(4 + eyePulse));
   ctx.fillRect(sx - 11, sy - 9, 4, 3);
   ctx.fillRect(sx + 7, sy - 6, 7, Math.floor(4 + eyePulse));
   ctx.fillRect(sx + 7, sy - 9, 4, 3);
+  // Eye glow
+  drawPixelGlow(e.x - 8, e.y - 6, 4, config.eyeColor,
+    Math.floor(e.x - sx), Math.floor(e.y - sy), 0.4);
+  drawPixelGlow(e.x + 8, e.y - 6, 4, config.eyeColor,
+    Math.floor(e.x - sx), Math.floor(e.y - sy), 0.4);
 
   // Jagged mouth
+  ctx.fillStyle = "#1a0000";
+  ctx.fillRect(sx - 12, sy + 6, 24, 8);
   ctx.fillStyle = "#ff4444";
   for (let i = -3; i <= 3; i++) {
     const toothH = (i % 2 === 0) ? 5 : 3;
-    ctx.fillRect(sx + i * 4 - 1, sy + 8, 3, toothH);
+    ctx.fillRect(sx + i * 4 - 1, sy + 6, 3, toothH);
+    ctx.fillRect(sx + i * 4 - 1, sy + 14 - toothH, 3, toothH);
   }
 
-  // Rotating spikes
-  ctx.fillStyle = "#ff6666";
+  // Rotating spikes with trail
+  const spikeSpeed = e.phase === 2 ? 1.5 : 0.5;
   for (let i = 0; i < 8; i++) {
-    const spikeAngle = (Math.PI * 2 / 8) * i + e.animTime * 0.5;
-    const spikeX = sx + Math.cos(spikeAngle) * (e.radius + 6);
-    const spikeY = sy + Math.sin(spikeAngle) * (e.radius + 6);
-    ctx.fillRect(Math.floor(spikeX - 2), Math.floor(spikeY - 2), 5, 5);
+    const spikeAngle = (Math.PI * 2 / 8) * i + e.animTime * spikeSpeed;
+    const dist = e.radius + 6;
+    const spikeX = sx + Math.cos(spikeAngle) * dist;
+    const spikeY = sy + Math.sin(spikeAngle) * dist;
+    // Trail
+    if (e.phase === 2) {
+      ctx.fillStyle = "#ff333366";
+      ctx.globalAlpha = 0.3;
+      const trailAngle = spikeAngle - spikeSpeed * 0.1;
+      const trX = sx + Math.cos(trailAngle) * dist;
+      const trY = sy + Math.sin(trailAngle) * dist;
+      ctx.fillRect(Math.floor(trX - 2), Math.floor(trY - 2), 4, 4);
+      ctx.globalAlpha = 1.0;
+    }
+    // Spike
+    ctx.fillStyle = e.phase === 2 ? "#ff3333" : "#ff6666";
+    ctx.fillRect(Math.floor(spikeX - 3), Math.floor(spikeY - 3), 6, 6);
+    ctx.fillStyle = "#ffaaaa";
+    ctx.fillRect(Math.floor(spikeX - 1), Math.floor(spikeY - 1), 3, 3);
+  }
+
+  // Phase 2: laser sweep visual enhancement
+  if (e.phase === 2) {
+    const laserAngle = e.attackAngle;
+    const laserLen = 80;
+    const lx = sx + Math.cos(laserAngle) * e.radius;
+    const ly = sy + Math.sin(laserAngle) * e.radius;
+    const lex = sx + Math.cos(laserAngle) * (e.radius + laserLen);
+    const ley = sy + Math.sin(laserAngle) * (e.radius + laserLen);
+    // Laser beam
+    ctx.strokeStyle = "#ff000088";
+    ctx.globalAlpha = 0.3 + Math.sin(e.animTime * 12) * 0.15;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(lx, ly);
+    ctx.lineTo(lex, ley);
+    ctx.stroke();
+    ctx.globalAlpha = 1.0;
+    // Stronger glow
+    drawPixelGlow(e.x, e.y, e.radius + 5, "#ff4444",
+      Math.floor(e.x - sx), Math.floor(e.y - sy), 0.5);
   }
 }
 
@@ -1712,11 +2307,174 @@ function drawWeaponHud() {
   }
 }
 
-function drawWorld(dt) {
-  let camX = clamp(player.x - VIEW_W / 2, 0, WORLD_W - VIEW_W);
-  let camY = clamp(player.y - VIEW_H / 2, 0, WORLD_H - VIEW_H);
+function drawThemedWalls(camX, camY, mapCfg) {
+  const level = currentLevel;
+  for (const w of walls) {
+    const wx = Math.floor(w.x - camX);
+    const wy = Math.floor(w.y - camY);
+    const ww = Math.floor(w.w);
+    const wh = Math.floor(w.h);
 
-  // Screen shake
+    // Skip off-screen walls
+    if (wx + ww < 0 || wy + wh < 0 || wx > VIEW_W || wy > VIEW_H) continue;
+
+    // Base color
+    ctx.fillStyle = mapCfg.wallColor;
+    ctx.fillRect(wx, wy, ww, wh);
+
+    // Themed texture overlay
+    const seed = (Math.floor(w.x) * 7 + Math.floor(w.y) * 13) & 0xff;
+    switch (level) {
+      case 1: // Volcano - lava cracks
+        ctx.fillStyle = "#4a1818";
+        for (let ty = 0; ty < wh; ty += 12) {
+          for (let tx = 0; tx < ww; tx += 16) {
+            ctx.fillRect(wx + tx, wy + ty, ww > 16 ? 14 : ww - 2, 1);
+          }
+        }
+        ctx.fillStyle = "#ff440044";
+        ctx.globalAlpha = 0.3;
+        const crackY = (seed % (wh - 6)) + 3;
+        ctx.fillRect(wx + 2, wy + crackY, ww - 4, 2);
+        ctx.globalAlpha = 1.0;
+        break;
+      case 2: // Grassland - wood grain
+        ctx.fillStyle = "#4a6828";
+        for (let ty = 0; ty < wh; ty += 8) {
+          ctx.fillRect(wx + 1, wy + ty, ww - 2, 1);
+        }
+        ctx.fillStyle = "#6a9a4a";
+        ctx.fillRect(wx, wy, ww, 3);
+        break;
+      case 3: // Secret forest - moss/vines
+        ctx.fillStyle = "#1a3828";
+        for (let ty = 4; ty < wh; ty += 10) {
+          for (let tx = 2; tx < ww; tx += 14) {
+            ctx.fillRect(wx + tx, wy + ty, 3, 6);
+          }
+        }
+        ctx.fillStyle = "#3a7a55";
+        ctx.fillRect(wx, wy, ww, 2);
+        ctx.fillRect(wx, wy + wh - 2, ww, 2);
+        break;
+      case 4: // Ocean - coral
+        ctx.fillStyle = "#1a3a5a";
+        for (let ty = 6; ty < wh; ty += 12) {
+          for (let tx = 3; tx < ww - 3; tx += 10) {
+            const ch = 4 + ((tx + seed) % 5);
+            ctx.fillRect(wx + tx, wy + ty, 3, ch);
+          }
+        }
+        ctx.fillStyle = "#4a7a9a";
+        ctx.fillRect(wx + 2, wy + 2, ww - 4, 2);
+        break;
+      case 5: // Desert - sandstone
+        ctx.fillStyle = "#6a5a30";
+        for (let ty = 0; ty < wh; ty += 10) {
+          ctx.fillRect(wx + 1, wy + ty, ww - 2, 2);
+        }
+        ctx.fillStyle = "#aa9a60";
+        ctx.fillRect(wx, wy, ww, 3);
+        // Cracks
+        ctx.fillStyle = "#5a4a20";
+        const cx1 = seed % Math.max(1, ww - 8);
+        ctx.fillRect(wx + cx1, wy + 4, 2, wh - 8);
+        break;
+      case 6: // Ruined city - concrete/rebar
+        ctx.fillStyle = "#3a3a44";
+        for (let ty = 0; ty < wh; ty += 16) {
+          ctx.fillRect(wx, wy + ty, ww, 1);
+          for (let tx = 0; tx < ww; tx += 20) {
+            ctx.fillRect(wx + tx, wy + ty, 1, 16);
+          }
+        }
+        // Rebar
+        ctx.fillStyle = "#8a6644";
+        if (seed % 3 === 0) {
+          ctx.fillRect(wx + (seed % Math.max(1, ww - 4)), wy, 2, Math.min(wh, 12));
+        }
+        break;
+      case 7: // Space - energy panels
+        ctx.fillStyle = "#2a2a5a";
+        for (let ty = 4; ty < wh - 4; ty += 12) {
+          for (let tx = 4; tx < ww - 4; tx += 12) {
+            ctx.fillRect(wx + tx, wy + ty, 8, 8);
+          }
+        }
+        ctx.fillStyle = "#6a6aaa";
+        ctx.globalAlpha = 0.4 + Math.sin(player.animTime * 2 + seed) * 0.2;
+        ctx.fillRect(wx + 2, wy + 2, ww - 4, 2);
+        ctx.globalAlpha = 1.0;
+        break;
+      case 8: // Battlefield - sandbags/metal
+        ctx.fillStyle = "#3a3420";
+        for (let ty = 0; ty < wh; ty += 8) {
+          const offset = (ty / 8) % 2 === 0 ? 0 : 6;
+          for (let tx = offset; tx < ww; tx += 12) {
+            ctx.fillRect(wx + tx, wy + ty, 10, 6);
+            ctx.fillStyle = "#4a4430";
+            ctx.fillRect(wx + tx + 1, wy + ty + 1, 8, 4);
+            ctx.fillStyle = "#3a3420";
+          }
+        }
+        break;
+      case 9: // Bone forest - bone texture
+        ctx.fillStyle = "#8a7a6a";
+        for (let ty = 6; ty < wh; ty += 14) {
+          ctx.fillRect(wx + 2, wy + ty, ww - 4, 2);
+          const jx = (seed + ty) % Math.max(1, ww - 8);
+          ctx.fillRect(wx + jx, wy + ty - 3, 2, 8);
+        }
+        ctx.fillStyle = "#aa9a8a";
+        ctx.fillRect(wx, wy, ww, 2);
+        break;
+      case 10: // Factory - metal panels
+        ctx.fillStyle = "#4a4a50";
+        for (let ty = 0; ty < wh; ty += 14) {
+          ctx.fillRect(wx, wy + ty, ww, 1);
+        }
+        for (let tx = 0; tx < ww; tx += 14) {
+          ctx.fillRect(wx + tx, wy, 1, wh);
+        }
+        // Rivets
+        ctx.fillStyle = "#9090a0";
+        for (let ty = 4; ty < wh; ty += 14) {
+          for (let tx = 4; tx < ww; tx += 14) {
+            ctx.fillRect(wx + tx, wy + ty, 3, 3);
+          }
+        }
+        break;
+    }
+
+    // Top highlight (edge lighting)
+    ctx.fillStyle = mapCfg.wallHighlight;
+    ctx.globalAlpha = 0.5;
+    ctx.fillRect(wx, wy, ww, 3);
+    ctx.fillRect(wx, wy, 3, wh);
+    ctx.globalAlpha = 1.0;
+
+    // Bottom/right shadow edge
+    ctx.fillStyle = "#00000044";
+    ctx.globalAlpha = 0.3;
+    ctx.fillRect(wx, wy + wh - 3, ww, 3);
+    ctx.fillRect(wx + ww - 3, wy, 3, wh);
+    ctx.globalAlpha = 1.0;
+  }
+}
+
+function drawWorld(dt) {
+  const targetCamX = clamp(player.x - VIEW_W / 2, 0, WORLD_W - VIEW_W);
+  const targetCamY = clamp(player.y - VIEW_H / 2, 0, WORLD_H - VIEW_H);
+
+  // Smooth camera lerp
+  const lerpSpeed = 6.0;
+  smoothCamX += (targetCamX - smoothCamX) * lerpSpeed * dt;
+  smoothCamY += (targetCamY - smoothCamY) * lerpSpeed * dt;
+
+  let camX = smoothCamX;
+  let camY = smoothCamY;
+
+  // Screen shake (applied after lerp)
   if (screenShakeTimer > 0) {
     screenShakeTimer -= dt;
     const intensity = screenShakeIntensity * (screenShakeTimer / 0.8);
@@ -1729,10 +2487,12 @@ function drawWorld(dt) {
   ctx.fillStyle = mapCfg.bgColor;
   ctx.fillRect(0, 0, VIEW_W, VIEW_H);
 
-  // Pixel grid floor
-  for (let y = -(camY % 32); y < VIEW_H; y += 32) {
-    for (let x = -(camX % 32); x < VIEW_W; x += 32) {
-      ctx.fillStyle = (Math.floor((x + camX) / 32) + Math.floor((y + camY) / 32)) % 2 ? mapCfg.floorColor1 : mapCfg.floorColor2;
+  // Pixel grid floor (use rounded cam to prevent tile-seam flicker)
+  const rcamX = Math.round(camX);
+  const rcamY = Math.round(camY);
+  for (let y = -(rcamY % 32); y < VIEW_H; y += 32) {
+    for (let x = -(rcamX % 32); x < VIEW_W; x += 32) {
+      ctx.fillStyle = (Math.floor((x + rcamX) / 32) + Math.floor((y + rcamY) / 32)) % 2 ? mapCfg.floorColor1 : mapCfg.floorColor2;
       ctx.fillRect(x, y, 32, 32);
     }
   }
@@ -1740,12 +2500,21 @@ function drawWorld(dt) {
   // Floor decorations
   drawFloorDecorations(camX, camY, mapCfg);
 
-  ctx.fillStyle = mapCfg.wallColor;
-  for (const w of walls) {
-    ctx.fillRect(Math.floor(w.x - camX), Math.floor(w.y - camY), Math.floor(w.w), Math.floor(w.h));
-    ctx.fillStyle = mapCfg.wallHighlight;
-    ctx.fillRect(Math.floor(w.x - camX + 4), Math.floor(w.y - camY + 4), Math.floor(w.w - 8), 6);
-    ctx.fillStyle = mapCfg.wallColor;
+  // Walls with themed textures
+  drawThemedWalls(camX, camY, mapCfg);
+
+  // === Shadow pass ===
+  for (const e of enemies) {
+    const shadowR = e.isSuperBoss ? e.radius * 1.3 : e.isBoss ? e.radius * 1.1 : e.radius;
+    const shadowA = e.isSuperBoss ? 0.35 : e.isBoss ? 0.3 : 0.2;
+    drawPixelShadow(e.x, e.y, shadowR, camX, camY, shadowA);
+  }
+  drawPixelShadow(player.x, player.y + player.breathOffset, player.radius, camX, camY, 0.2);
+  for (const m of medkits) {
+    drawPixelShadow(m.x, m.y, 8, camX, camY, 0.15);
+  }
+  for (const s of speedups) {
+    drawPixelShadow(s.x, s.y, 8, camX, camY, 0.15);
   }
 
   // Player bullets with per-bullet color/size
@@ -1768,6 +2537,9 @@ function drawWorld(dt) {
   for (const m of medkits) {
     const mx = Math.floor(m.x - camX);
     const my = Math.floor(m.y - camY);
+    // Medkit glow
+    const medPulse = Math.sin(player.animTime * 3) * 0.15 + 0.25;
+    drawPixelGlow(m.x, m.y, 10, "#aaddff", camX, camY, medPulse);
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(mx - 6, my - 6, 12, 12);
     ctx.fillStyle = "#cfe8ff";
@@ -1779,6 +2551,9 @@ function drawWorld(dt) {
   for (const s of speedups) {
     const sx2 = Math.floor(s.x - camX);
     const sy2 = Math.floor(s.y - camY);
+    // Speedup glow
+    const spPulse = Math.sin(player.animTime * 4) * 0.15 + 0.25;
+    drawPixelGlow(s.x, s.y, 10, "#50d4a8", camX, camY, spPulse);
     ctx.fillStyle = "#1a1a2e";
     ctx.fillRect(sx2 - 7, sy2 - 7, 14, 14);
     ctx.fillStyle = "#50d4a8";
